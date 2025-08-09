@@ -1,0 +1,9 @@
+name: "Deep Pucking Value"
+output_dir: "docs"
+navbar:
+  title: "Deep Pucking Value — Dashboard Hub"
+  left:
+    - text: "Home"
+      href: index.html
+    - text: "EP02 PCA"
+      href: ep02/ep02.html
