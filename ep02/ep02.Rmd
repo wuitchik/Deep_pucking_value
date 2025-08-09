@@ -1,0 +1,384 @@
+---
+title: "Deep Pucking Value - Cluster Puck"
+author: "Daniel Wuitchik"
+date: "2025-08-03"
+output:
+  html_document:
+    code_folding: hide   # or "show"
+    css: styles.css
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Here, I explore skater data from 2019-2025 by use of a Principal Component Analysis (PCA). This is an unsupervised linear transformation technique that projects high-dimensional data into a new coordinate system defined by orthogonal basis vectors called principal components. These components are ordered such that the first captures the maximum possible variance in the data, the second captures the next largest variance while being orthogonal to the first, and so forth. Mathematically, PCA computes the eigenvectors and eigenvalues of the covariance (or correlation) matrix of the centered data, where eigenvectors define the component directions and eigenvalues indicate the proportion of variance explained. By retaining only the leading components, PCA reduces dimensionality while preserving the structure that explains most of the dataset’s variability.
+
+Libraries used
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(FactoMineR)
+library(factoextra)
+library(plotly)
+library(purrr)
+library(ggrepel)
+library(scales)
+library(knitr)
+```
+
+#### Load Data
+##### Data pulled from 2019-2025 from www.moneypuck.com
+Filtered players that played less than 20 games. Data shown is for 5 on 5. I also merged my leagues fantasy points from 2024-25 for purpose of 
+
+```{r message=FALSE, warning=FALSE}
+
+# List only CSVs with "skater" in the filename
+csv_files <- list.files(
+  path = "../Data",
+  pattern = "skater.*\\.csv$",   # matches files like "skater_stats.csv"
+  full.names = TRUE,
+  ignore.case = TRUE             # optional, allows "Skater", "SKATER", etc.
+)
+
+# Read and combine into a single data frame, tracking the source file
+# Filtered columns with x - didn't want predicted autocorrelated data to essentially be repeated. I'm interested more in the raw metrics. 
+
+df_all <- csv_files %>%
+  set_names() %>%
+  map_dfr(read_csv, .id = "source") %>%
+  filter(situation == "5on5", games_played > 20) %>%
+  select(-matches("x"))
+
+```
+
+
+### League scoring format
+
+```{r echo=FALSE}
+scoring_table <- data.frame(
+  `Scoring Group` = c(
+    "Skaters", "Skaters", "Skaters", "Skaters", "Skaters", "Skaters", "Skaters", "Skaters",
+    "Goalies", "Goalies", "Goalies", "Goalies", "Goalies", "Goalies", "Goalies", "Goalies"
+  ),
+  `Scoring Category` = c(
+    "Assists (A)", "Blocks (Blk)", "Goals (G)", "Hits (Hit)", "Penalty Minutes (PIM)",
+    "Short-Handed Goals (SHG)", "Shots on Goal (SOG)", "Power Play Points (PPP)",
+    "Assists (A)", "Goals (G)", "Goals Against (GA)", "Penalty Minutes (PIM)",
+    "Saves (SV)", "Shutouts (SHO)", "Wins (Goalies only) (W)", "Overtime Losses + Shootout Losses (OL+ShL)"
+  ),
+  Points = c(
+    2, 0.4, 3, 0.4, 0.5, 2, 0.4, 1,
+    2, 3, -1, 0.5, 0.2, 5, 4, 1
+  )
+)
+
+kable(scoring_table, align = "llr", caption = "Fantasy Hockey Scoring System")
+
+```
+
+### Make a principal components, and loading vectors
+
+```{r message=FALSE, warning=FALSE}
+df_fantasy <- read_csv("../Data/Fantrax-Players-Do That Hockey (2).csv") %>%
+  mutate(name = Player)
+
+df_merged <- df_all %>%
+  inner_join(df_fantasy, by = "name")
+
+
+# Keep identifying info for later
+meta <- df_merged %>% select(name, position, `FP/G`, season)
+
+# Select only numeric columns
+df_numeric <- df_merged %>%
+  select(where(is.numeric)) %>%
+  drop_na() 
+
+# Standardize and run PCA
+pca_res <- PCA(df_numeric, scale.unit = TRUE, graph = FALSE)
+pca_coords <- as.data.frame(pca_res$ind$coord) %>%
+  bind_cols(meta)
+
+# Get percent variance explained
+eig_vals <- pca_res$eig
+pc1_var <- round(eig_vals[1, 2], 1)  # % of variance explained by PC1
+pc2_var <- round(eig_vals[2, 2], 1)  # % of variance explained by PC2
+
+# Extract variable coordinates (loadings)
+var_coords <- as.data.frame(pca_res$var$coord)
+
+# Get top 10 loadings
+var_coords <- as.data.frame(pca_res$var$coord)
+var_coords$impact <- sqrt(var_coords$Dim.1^2 + var_coords$Dim.2^2)
+top_vars <- var_coords %>%
+  arrange(desc(impact)) %>%
+  slice(1:10) %>%
+  rownames_to_column("variable")
+
+# Compute vector magnitude (impact across PC1 and PC2)
+var_coords$impact <- sqrt(var_coords$Dim.1^2 + var_coords$Dim.2^2)
+
+# Only keep the needed columns for plotting arrows
+arrow_df <- top_vars %>%
+  select(variable, Dim.1, Dim.2, impact)
+
+# Extract PCA coordinates and join metadata
+pca_coords <- as.data.frame(pca_res$ind$coord) %>%
+  bind_cols(meta)
+```
+
+
+### Interactive PCA
+
+Clearly see differences between forwards and defensemen. Note that this is across 2019-2025 seasons, so there's duplicate players. Coloured by 2025 fantasy points per game. 
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+fig <- plot_ly(data = pca_coords,
+               x = ~Dim.1,
+               y = ~Dim.2,
+               type = 'scatter',
+               mode = 'markers',
+               text = ~paste0(name, "<br>FPts: ", `FP/G`),
+               hoverinfo = 'text',
+               marker = list(size = 8,
+                             color = ~ `FP/G`,
+                             colorscale = 'RdYlBu',
+                             showscale = TRUE,
+                             colorbar = list(title = "Fantasy Points / Game")))
+
+# Add layout with variance
+fig <- layout(fig,
+              title = "Interactive PCA of NHL Skaters (5v5)",
+              xaxis = list(title = paste0("PC1 (", pc1_var, "%)")),
+              yaxis = list(title = paste0("PC2 (", pc2_var, "%)")))
+
+
+fig
+```
+
+### This is a lot, let's break it down by year. Notice how the spread along the first PC is variable year to year. 
+
+```{r all_years_pca, fig.width=8, fig.height=13}
+# Single panel with a slider to scrub through seasons
+plot_ly(
+  data = pca_coords,
+  x = ~Dim.1, y = ~Dim.2,
+  frame = ~season,
+  type = "scatter", mode = "markers",
+  text = ~paste0(
+    "Name: ", name,
+    "<br>Season: ", season,
+    "<br>Position: ", position,
+    "<br>FP/G: ", round(`FP/G`, 2)
+  ),
+  hoverinfo = "text",
+  marker = list(
+    size = 8,
+    color = ~`FP/G`,
+    colorscale = "RdYlBu",
+    showscale = TRUE,
+    colorbar = list(title = "Fantasy Points / Game")
+  )
+) %>%
+  layout(
+    title = "Interactive PCA of NHL Skaters (5v5) — Season Slider",
+    xaxis = list(title = paste0("PC1 (", pc1_var, "%)")),
+    yaxis = list(title = paste0("PC2 (", pc2_var, "%)"))
+  ) %>%
+  animation_opts(frame = 800, easing = "linear", redraw = FALSE) %>%
+  animation_slider(currentvalue = list(prefix = "Season: "))
+
+```
+
+
+```{r}
+final_year <- 2024
+
+# Ensure season is numeric (for alpha gradient)
+pca_coords <- pca_coords %>%
+  mutate(season = as.integer(season))
+
+# 1) Identify top 5 per position in the final year
+top5_final <- pca_coords %>%
+  filter(season == final_year) %>%
+  group_by(position) %>%
+  slice_max(order_by = `FP/G`, n = 5, with_ties = FALSE) %>%
+  ungroup() %>%
+  pull(name)
+
+# 2) Flag highlights and compute centroids
+pca_coords <- pca_coords %>%
+  mutate(is_top5_final = name %in% top5_final)
+
+centroids <- pca_coords %>%
+  filter(is_top5_final) %>%
+  group_by(name) %>%
+  summarise(
+    centroid_x = mean(Dim.1, na.rm = TRUE),
+    centroid_y = mean(Dim.2, na.rm = TRUE),
+    position   = first(position),
+    .groups = "drop"
+  )
+
+# 3) Segments from each yearly point -> centroid (for highlighted players only)
+vectors <- pca_coords %>%
+  filter(is_top5_final) %>%
+  left_join(centroids, by = c("name", "position"))
+
+# Position colors
+pos_colors <- c(
+  "C"  = "#5D8AA8",
+  "L" = "#D98880",
+  "R" = "#8F9779",
+  "D"  = "#A39EB5"
+)
+
+ggplot(pca_coords, aes(Dim.1, Dim.2)) +
+  # Background: all non-highlighted players at low alpha
+  geom_point(
+    data = ~ subset(.x, !is_top5_final),
+    aes(color = position),
+    alpha = 0.08, size = 1
+  ) +
+  # Vectors from each highlighted point to their centroid
+# Vectors from each highlighted point to their centroid
+geom_segment(
+  data = vectors,
+  aes(xend = centroid_x, yend = centroid_y, color = position, alpha = season),
+  linewidth = 0.5,
+  lineend = "round"
+) +
+  # Highlighted players' points: alpha mapped by year (2019 faint -> 2024 solid)
+  geom_point(
+    data = ~ subset(.x, is_top5_final),
+    aes(color = position, alpha = season),
+    size = 2
+  ) +
+  # Centroids for highlighted players
+  geom_point(
+    data = centroids,
+    aes(x = centroid_x, y = centroid_y, fill = position),
+    shape = 21, color = "black", size = 4
+  ) +
+  
+geom_text_repel(
+  data = centroids,
+  aes(centroid_x, centroid_y, label = name),
+  size = 3,
+  seed = 42,
+  max.overlaps = Inf,     # allow many labels, let repel do its thing
+  box.padding = 0.3,
+  point.padding = 0.4,
+  min.segment.length = 0, # always draw leader lines when needed
+  segment.size = 0.2
+) +
+  scale_color_manual(values = pos_colors) +
+  scale_fill_manual(values  = alpha(pos_colors, 0.5)) +
+  # Alpha gradient: set range and clamp to 2019–2024; hide alpha legend
+  scale_alpha(
+    range = c(0.25, 1),
+    limits = c(2019, 2024),
+    guide = "none"
+  ) +
+  labs(
+    title = paste0("PCA (5v5) — Highlighting Top 5 per Position in ", final_year),
+    subtitle = "Highlighted players: points fade with earlier seasons; vectors connect each season to that player’s centroid",
+    x = paste0("PC1 (", pc1_var, "%)"),
+    y = paste0("PC2 (", pc2_var, "%)"),
+    color = "Position",
+    fill  = "Position"
+  ) +
+  theme_classic()
+```
+
+This code isolates the top five players in each position from the 2024 season based on fantasy points per game, then visualizes how their performance profiles have shifted in PCA space across multiple seasons. It begins by flagging these top players in the full dataset and calculating each player’s centroid — the average location of their PCA coordinates across all seasons. The plot shows all other players as faint grey background points, while the highlighted players appear with colors indicating position and transparency that fades for earlier seasons. Segments connect each yearly observation of a highlighted player to their centroid, illustrating how far and in what direction their performance in a given season deviated from their long-term average. The figure is faceted by position, with labeled centroids for easy identification of the players being tracked.
+```{r, fig.width=11, fig.height=14}
+final_year <- 2024
+
+# Ensure season numeric for alpha gradient
+pca_coords <- pca_coords %>% mutate(season = as.integer(season))
+
+# Top 5 per position in final year
+top5_final <- pca_coords %>%
+  filter(season == final_year) %>%
+  group_by(position) %>%
+  slice_max(order_by = `FP/G`, n = 5, with_ties = FALSE) %>%
+  ungroup() %>%
+  pull(name)
+
+# Flag highlights
+pca_coords <- pca_coords %>%
+  mutate(is_top5_final = name %in% top5_final)
+
+# Centroids for highlighted players (across all seasons)
+centroids <- pca_coords %>%
+  filter(is_top5_final) %>%
+  group_by(name) %>%
+  summarise(
+    centroid_x = mean(Dim.1, na.rm = TRUE),
+    centroid_y = mean(Dim.2, na.rm = TRUE),
+    position   = first(position),
+    .groups = "drop"
+  )
+
+# Segments from each yearly point to that player's centroid
+vectors <- pca_coords %>%
+  filter(is_top5_final) %>%
+  left_join(centroids, by = c("name", "position")) %>%
+  drop_na(centroid_x, centroid_y, Dim.1, Dim.2)
+
+# Colors (make sure keys match your position codes)
+pos_colors <- c(
+  "C"  = "#5D8AA8",
+  "L" = "#D98880",
+  "R" = "#8F9779",
+  "D"  = "#A39EB5"
+)
+
+set.seed(42)
+
+ggplot(pca_coords, aes(Dim.1, Dim.2)) +
+  # Background points: same position only (facet will filter for us)
+  geom_point(
+    data = pca_coords %>% filter(!is_top5_final),
+    color = "grey70", alpha = 0.12, size = 1
+  ) +
+  # Vectors for highlighted players (same position via facet), alpha by year
+  geom_segment(
+    data = vectors,
+    aes(xend = centroid_x, yend = centroid_y, color = position, alpha = season),
+    linewidth = 0.5, lineend = "round"
+  ) +
+  # Highlighted points with alpha gradient by season
+  geom_point(
+    data = pca_coords %>% filter(is_top5_final),
+    aes(color = position, alpha = season),
+    size = 2
+  ) +
+  # Centroids + non-overlapping labels
+  geom_point(
+    data = centroids,
+    aes(centroid_x, centroid_y, fill = position),
+    shape = 21, color = "black", size = 4
+  ) +
+  geom_text_repel(
+    data = centroids,
+    aes(centroid_x, centroid_y, label = name),
+    size = 3, seed = 42, max.overlaps = Inf,
+    box.padding = 0.3, point.padding = 0.4,
+    min.segment.length = 0, segment.size = 0.2
+  ) +
+  scale_color_manual(values = pos_colors, guide = "none") +
+  scale_fill_manual(values  = alpha(pos_colors, 0.5), guide = "none") +
+  scale_alpha(range = c(0.25, 1), limits = c(2019, 2024), guide = "none") +
+  facet_wrap(~ position, ncol = 2, scales = "free") +
+  theme_classic() +
+  theme(panel.spacing = unit(1, "lines"), aspect.ratio = 1) +
+  labs(
+    title = paste0("PCA (5v5) — Top 5 per Position in ", final_year, " Highlighted"),
+    subtitle = "Each panel shows only that position's players; highlights fade for earlier seasons and connect to the player's centroid",
+    x = paste0("PC1 (", pc1_var, "%)"),
+    y = paste0("PC2 (", pc2_var, "%)")
+  )
+```
+

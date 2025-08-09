@@ -1,0 +1,34 @@
+/* Make main content span the full browser width */
+.main-container {
+  max-width: 100% !important;
+  padding-left: 20px;   /* small side padding so text/plots don't touch the edge */
+  padding-right: 20px;
+}
+
+/* Ensure all figures/widgets use full available width */
+.figure,
+img,
+.html-widget,
+.plotly,
+.plotly-html-widget {
+  width: 100% !important;
+  height: auto;
+}
+
+/* Center ggplot static images */
+p > img {
+  display: block;
+  margin: auto;
+}
+
+/* Slightly larger font for readability on wide layouts */
+body {
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+/* Optional: nicer headings */
+h1, h2, h3, h4 {
+  font-weight: 600;
+  margin-top: 1.2em;
+}
